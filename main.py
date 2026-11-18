@@ -11,7 +11,10 @@ trailing stop.
 
 Entry (flat only, whole cash, one buy at a time):
   - the 60-minute return is at or below -60 bps, AND the 5-minute return is
-    at or above +20 bps (the fall has stopped and the price is turning up).
+    at or above +20 bps (the fall has stopped and the price is turning up),
+    AND the latest close is above the previous close: the bounce must still
+    be alive on the most recent bar, not already rolling over inside the
+    5-minute confirmation window.
   - the fill happens at the next bar's open, so the entry lands a minute
     after the signal, still near the trough of a V-shaped bounce.
 
@@ -20,7 +23,8 @@ Exit (while holding): whichever comes first -
     before it fades;
   - a trailing stop 75 bps below the highest close seen since entry. The
     peak starts at the entry close, so this is also a 0.75% stop-loss on a
-    trade that falls straight after entry.
+    trade that falls straight after entry. The peak and entry close are
+    cleared on every sell, so no stale level can trigger a later trade.
 
 Late-window fallbacks, so the bot still trades on a quiet day (the race
 needs at least 1 trade to meet the guardrails):
@@ -43,6 +47,14 @@ constant-product impact, fills at next bar's open):
     combinations profitable on both windows with 6+ fills in total).
     This is the deliberate fix for v3, whose +$24.17 dev profit rested on
     2 round trips in a single window and then lost live.
+  - Revision: the rising-close entry guard was added after the first
+    validation and re-checked on both windows: it never binds on either
+    window (both entries were already rising), so the PnL, fills and
+    drawdowns above are unchanged, and it only guards the unseen race
+    window against buying a bounce that has already rolled over. A
+    tighter 50 bps trailing stop was tried and rejected (it loses on
+    both windows: -$5.20 / -$8.07); a 100 bps stop is worse on this
+    window (+$7.51), so 75 bps stays.
 
 Everything is integer arithmetic on the closes the harness sends; there is no
 clock, no network, no randomness and no state beyond the close history, the
@@ -135,7 +147,11 @@ class DipBot:
             ref5 = self.closes[-STAB_WIN_BARS - 1]
             ret60 = (close - ref60) * 10000 // ref60
             ret5 = (close - ref5) * 10000 // ref5
-            fire = ret60 <= -DROP_BPS and ret5 >= STAB_BPS
+            # The bounce must still be alive on the latest bar: the 5-minute
+            # return can clear +20 bps while the newest minute already turns
+            # down, and buying that rollover is buying a faded bounce.
+            rising = n >= 2 and close > self.closes[-2]
+            fire = ret60 <= -DROP_BPS and ret5 >= STAB_BPS and rising
             if not fire and state.seq >= LATE_BAR and self.buys_filled == 0:
                 fire = ret60 <= -LATE_DROP_BPS and ret5 >= LATE_STAB_BPS
             if not fire and state.seq >= FINAL_BAR and self.buys_filled == 0:
